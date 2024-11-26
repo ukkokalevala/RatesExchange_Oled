@@ -1,0 +1,150 @@
+#include <Wire.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
+#include <ESP8266WiFi.h>
+#include <WiFiClientSecure.h>
+#include <ESP8266HTTPClient.h>
+#include <ArduinoJson.h>
+//#include "secrets.h"
+
+// OLED display setup
+#define SCREEN_WIDTH 128
+#define SCREEN_HEIGHT 64
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
+
+// WiFi credentials
+const char* ssid = "yourSSID";
+const char* password = "youtPASSWORD";
+
+// Exchange Rate API
+const char* api_url = "https://v6.exchangerate-api.com/v6/f584e9550bffb7f902203449/latest/USD";
+
+// Variables for exchange rates
+float rateEUR = 0.0;
+float rateGBP = 0.0;
+float rateZAR = 0.0;
+float rateAUD = 0.0;
+
+// Variables for last update
+char updateDate[20] = "N/A";
+char updateTime[20] = "N/A";
+
+// Page navigation
+int currentPage = 0; // 0: Exchange Rates, 1: Last Update
+unsigned long lastSwitch = 0;
+
+void setup() {
+  Serial.begin(115200);
+
+  // Initialize OLED display
+  if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) { // Adjust I2C address if needed
+    Serial.println(F("SSD1306 allocation failed"));
+    for (;;);
+  }
+  display.display();
+  delay(2000);
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE);
+
+  // Connect to WiFi
+  display.setCursor(0, 0);
+  display.print("Connecting WiFi...");
+  display.display();
+  WiFi.begin(ssid, password);
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.println("\nWiFi connected!");
+  display.clearDisplay();
+  display.setCursor(0, 0);
+  display.print("WiFi Connected!");
+  display.display();
+  delay(2000);
+
+  // Fetch exchange rates
+  fetchExchangeRates();
+}
+
+void loop() {
+  // Automatically switch pages every 5 seconds
+  if (millis() - lastSwitch > 5000) {
+    currentPage = (currentPage + 1) % 2; // Cycle through 2 pages
+    displayPage(currentPage);
+    lastSwitch = millis();
+  }
+}
+
+void fetchExchangeRates() {
+  if (WiFi.status() == WL_CONNECTED) {
+    WiFiClientSecure client;
+    client.setInsecure(); // Skip SSL validation
+
+    HTTPClient http;
+    http.begin(client, api_url);
+
+    int httpCode = http.GET();
+    if (httpCode > 0) {
+      String payload = http.getString();
+      Serial.println("Response:");
+      Serial.println(payload);
+
+      // Parse JSON
+      StaticJsonDocument<2048> doc;
+      DeserializationError error = deserializeJson(doc, payload);
+      if (error) {
+        Serial.print("JSON deserialization failed: ");
+        Serial.println(error.f_str());
+        return;
+      }
+
+      // Extract rates
+      rateEUR = doc["conversion_rates"]["EUR"];
+      rateGBP = doc["conversion_rates"]["GBP"];
+      rateZAR = doc["conversion_rates"]["ZAR"]; // USD -> ZAR rate
+      rateAUD = doc["conversion_rates"]["AUD"]; // USD -> AUD rate
+
+      // Extract and split the update time into date and time
+      const char* lastUpdateStr = doc["time_last_update_utc"];
+      strncpy(updateDate, lastUpdateStr, 16); // Extracts "Mon, 25 Nov 2024"
+      updateDate[16] = '\0';                 // Null-terminate the string
+      strncpy(updateTime, lastUpdateStr + 17, 20); // Extracts "00:00:01 +0000"
+    } else {
+      Serial.printf("HTTP Error: %s\n", http.errorToString(httpCode).c_str());
+    }
+    http.end();
+  } else {
+    Serial.println("WiFi not connected.");
+  }
+}
+
+void displayPage(int page) {
+  display.clearDisplay();
+
+  if (page == 0) {
+    // Page 1: Currency Exchange Rates
+    display.setCursor(0, 0);
+    display.print("USD->EUR: ");
+    display.print(rateEUR, 2); // Display EUR rate
+    display.setCursor(0, 10);
+    display.print("USD->GBP: ");
+    display.print(rateGBP, 2); // Display GBP rate
+    display.setCursor(0, 20);
+    display.print("USD->ZAR: ");
+    display.print(rateZAR, 2); // Display ZAR rate
+    display.setCursor(0, 30);
+    display.print("USD->AUD: ");
+    display.print(rateAUD, 2);
+  } else if (page == 1) {
+    // Page 2: Last Update (Date and Time)
+    display.setCursor(0, 0);
+    display.print("Last Update:");
+    display.setCursor(0, 10);
+    display.print(updateDate); // Display date
+    display.setCursor(0, 20);
+    display.print(updateTime); // Display time
+  }
+
+  display.display();
+}
